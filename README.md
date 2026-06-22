@@ -19,32 +19,29 @@
 
 ### 环境要求
 
-- Node.js 18+
+- Node.js 18+，**推荐使用node 18 + pnpm9构建**
 - pnpm (推荐) 或 npm/yarn
 
 ### 1. 安装网易云音乐 API 服务器
 
-1. 下载 API 服务器包：
-   ```
-   解压：
-   https://registry.npmjs.org/NeteaseCloudMusicApi/-/NeteaseCloudMusicApi-4.28.0.tgz
-   ```
-
-2. 解压并安装依赖：
+1. 克隆服务器：
    ```bash
-   npm install
-   # 或
-   yarn install
+   git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git
    ```
 
-3. 启动服务器：
+2. 安装依赖：
+   ```bash
+   pnpm install
+   ```
+
+3. 启动接口服务器：
    ```bash
    npm start
    # 或
    yarn start
    ```
 
-### 2. 启动应用
+### 2. 启动音乐应用
 
 1. 安装依赖：
    ```bash
@@ -55,17 +52,14 @@
    ```bash
    pnpm dev
    ```
-   > 默认请求端口号为3006, 可以在.env 文件中更改VITE_URL
+   > 默认请求端口号为3000, 可以在.env 文件中更改VITE_URL
 3. 构建应用：
    ```bash
    # Windows
-   pnpm build:win
+   pnpm installer:build:win
 
    # macOS
-   pnpm build:mac
-
-   # Linux
-   pnpm build:linux
+   pnpm installer:build:mac
    ```
 ### 可能会遇到的问题
 

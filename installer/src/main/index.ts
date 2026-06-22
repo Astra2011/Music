@@ -8,9 +8,9 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  renameSync,
   rmSync,
-  statSync
+  statSync,
+  writeFileSync
 } from 'original-fs'
 import { exec, execSync, spawn } from 'child_process'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
@@ -197,6 +197,43 @@ ipcMain.handle('installer:disk-info', (_evt, targetPath: string) => {
   return { available: 0, total: 0, required }
 })
 
+// ─── 设置持久化（记住安装路径和选项） ────────────────────────────────────────
+function getSettingsRegKey(): string {
+  return 'HKCU\\Software\\音乐'
+}
+
+ipcMain.handle('installer:save-settings', (_evt, settings: Record<string, unknown>) => {
+  try {
+    const json = JSON.stringify(settings)
+    if (process.platform === 'win32') {
+      execSync(`reg add "${getSettingsRegKey()}" /v InstallerPrefs /t REG_SZ /d "${json.replace(/"/g, '\\"')}" /f`, { windowsHide: true })
+    } else {
+      const { writeFileSync, mkdirSync } = require('fs')
+      const dir = join(app.getPath('home'), '.config', 'music')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'installer-prefs.json'), json, 'utf-8')
+    }
+    return true
+  } catch {
+    return false
+  }
+})
+
+ipcMain.handle('installer:load-settings', () => {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync(`reg query "${getSettingsRegKey()}" /v InstallerPrefs 2>nul`, { windowsHide: true }).toString()
+      const match = out.match(/InstallerPrefs\s+REG_SZ\s+(.+)/s)
+      if (match) return JSON.parse(match[1].trim())
+    } else {
+      const { readFileSync } = require('fs')
+      const path = join(app.getPath('home'), '.config', 'music', 'installer-prefs.json')
+      if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf-8'))
+    }
+  } catch { /* 首次运行没有设置 */ }
+  return null
+})
+
 // ─── 核心安装逻辑 ──────────────────────────────────────────────────────────────
 ipcMain.handle('installer:run', async (evt, opts: InstallOptions) => {
   const send = (step: string, progress: number) => {
@@ -261,10 +298,14 @@ ipcMain.handle('installer:run', async (evt, opts: InstallOptions) => {
       if (existsSync(dataDir)) {
         log('[删除旧版本] 备份用户数据目录...')
         try {
-          ensureDir(dirname(dataBackup))
-          renameSync(dataDir, dataBackup)
+          // PowerShell Copy-Item 跨盘可靠，无 robocopy 退出码问题
+          execSync(
+            `powershell -NoProfile -Command "Copy-Item -Path '${dataDir}' -Destination '${dataBackup}' -Recurse -Force"`,
+            { timeout: 30000, windowsHide: true }
+          )
+          rmSync(dataDir, { recursive: true, force: true })
           hasBackup = true
-          log('[删除旧版本] ✓ 用户数据已备份到临时目录')
+          log('[删除旧版本] ✓ 用户数据已备份')
         } catch (err: unknown) {
           logError(`[删除旧版本] 备份用户数据失败: ${err instanceof Error ? err.message : err}`)
         }
@@ -395,7 +436,11 @@ ipcMain.handle('installer:run', async (evt, opts: InstallOptions) => {
         log('[删除旧版本] 恢复用户数据目录...')
         try {
           ensureDir(destAppPath)
-          renameSync(dataBackup, dataDir)
+          execSync(
+            `powershell -NoProfile -Command "Copy-Item -Path '${dataBackup}' -Destination '${dataDir}' -Recurse -Force"`,
+            { timeout: 30000, windowsHide: true }
+          )
+          rmSync(dataBackup, { recursive: true, force: true })
           log('[删除旧版本] ✓ 用户数据已恢复')
         } catch (err: unknown) {
           logError(`[删除旧版本] 恢复用户数据失败: ${err instanceof Error ? err.message : err}`)
@@ -546,9 +591,97 @@ ipcMain.handle('installer:run', async (evt, opts: InstallOptions) => {
     send('安装完成 ✓', 100)
     await delay(300)
 
+    // ── 注册到 Windows 程序和功能 + 生成卸载脚本 ──────────────────────────
+    if (process.platform === 'win32') {
+      try {
+        const exePath = join(destAppPath, '音乐.exe')
+        const uninstallBat = join(destAppPath, 'uninstall.bat')
+        // 生成卸载脚本
+        const batContent = [
+          '@echo off',
+          'title 音乐 - 卸载程序',
+          'echo 正在卸载 音乐...',
+          '',
+          'echo [1/5] 关闭正在运行的程序...',
+          'taskkill /f /im 音乐.exe 2>nul',
+          'taskkill /f /im ncm-server.exe 2>nul',
+          'taskkill /f /im ncm-server 2>nul',
+          'ping 127.0.0.1 -n 2 >nul',
+          '',
+          'echo [2/5] 删除应用程序文件...',
+          `rmdir /s /q "${destAppPath}" 2>nul`,
+          '',
+          'echo [3/5] 删除桌面快捷方式...',
+          `del /f /q "${app.getPath('desktop').replace(/\\/g, '\\\\')}\\\\音乐.lnk" 2>nul`,
+          '',
+          'echo [4/5] 清理文件关联...',
+          'reg delete "HKCU\\Software\\Classes\\音乐.mp3" /f 2>nul',
+          'reg delete "HKCU\\Software\\Classes\\音乐.flac" /f 2>nul',
+          'reg delete "HKCU\\Software\\Classes\\音乐.aac" /f 2>nul',
+          'reg delete "HKCU\\Software\\Classes\\音乐.m4a" /f 2>nul',
+          'reg delete "HKCU\\Software\\Classes\\音乐.ogg" /f 2>nul',
+          'reg delete "HKCU\\Software\\Classes\\音乐.wav" /f 2>nul',
+          'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "音乐" /f 2>nul',
+          'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "NcmMusicServer" /f 2>nul',
+          '',
+          'echo [5/5] 清理注册表...',
+          'reg delete "HKCU\\Software\\音乐" /f 2>nul',
+          'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /f 2>nul',
+          '',
+          'echo.',
+          'echo 卸载完成！',
+          'pause'
+        ].join('\r\n')
+        writeFileSync(uninstallBat, batContent, 'utf-8')
+
+        // 注册到控制面板
+        execSync(
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /v DisplayName /t REG_SZ /d "音乐" /f`,
+          { windowsHide: true }
+        )
+        execSync(
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /v UninstallString /t REG_SZ /d "${uninstallBat}" /f`,
+          { windowsHide: true }
+        )
+        execSync(
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /v InstallLocation /t REG_SZ /d "${destAppPath}" /f`,
+          { windowsHide: true }
+        )
+        execSync(
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /v DisplayIcon /t REG_SZ /d "${exePath}" /f`,
+          { windowsHide: true }
+        )
+        execSync(
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /v Publisher /t REG_SZ /d "YSH" /f`,
+          { windowsHide: true }
+        )
+        execSync(
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /v NoModify /t REG_DWORD /d 1 /f`,
+          { windowsHide: true }
+        )
+        execSync(
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\音乐" /v NoRepair /t REG_DWORD /d 1 /f`,
+          { windowsHide: true }
+        )
+        log('[install] ✓ 已注册到 Windows 程序和功能')
+      } catch (err: unknown) {
+        logError(`[install] 注册卸载信息失败: ${err instanceof Error ? err.message : err}`)
+      }
+    }
+
     return { success: true, appPath: destAppPath }
   } catch (err: unknown) {
-    const message = err instanceof Error ? translateError(err) : String(err)
+    let message = err instanceof Error ? translateError(err) : String(err)
+    // 补充上下文，帮助用户判断原因
+    if (message.includes('找不到主应用包') || message.includes('ENOENT')) {
+      message = `安装包不完整，请重新下载安装程序。\n（${message}）`
+    } else if (message.includes('EBUSY') || message.includes('被占用')) {
+      message = `部分文件被占用，请关闭 音乐.exe 和 ncm-server.exe 后重试。\n（${message}）`
+    } else if (message.includes('ENOSPC') || message.includes('空间不足')) {
+      message = `目标磁盘空间不足，请更换磁盘或清理空间后重试。`
+    } else if (message.includes('EACCES') || message.includes('EPERM') || message.includes('权限')) {
+      message = `权限不足，请以管理员身份运行安装程序。\n（${message}）`
+    }
     return { success: false, error: message }
   }
 })

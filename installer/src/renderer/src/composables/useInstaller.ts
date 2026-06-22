@@ -211,6 +211,15 @@ export function useInstaller() {
   let removeProgressListener: (() => void) | null = null
 
   async function startInstall() {
+    // 安装前检查磁盘空间
+    if (diskInfo.total > 0 && diskInfo.available < diskInfo.required) {
+      installFailed.value = true
+      installError.value = `磁盘空间不足：需要 ${diskRequiredMB.value}，仅剩 ${diskAvailableGB.value}`
+      currentStep.value = 4
+      installLog.value = ['❌ 安装失败：' + installError.value]
+      return
+    }
+
     currentStep.value = 4
     installing.value = true
     installDone.value = false
@@ -239,6 +248,14 @@ export function useInstaller() {
     }
 
     if (result.success) {
+      // 记住本次的安装路径和选项，下次自动恢复
+      window.installer.saveSettings({
+        lastInstallPath: installPath.value,
+        createShortcut: options.createShortcut,
+        autoStart: options.autoStart,
+        associateFiles: options.associateFiles,
+        installServer: options.installServer
+      })
       installedAppPath.value = result.appPath ?? ''
       installDone.value = true
       setTimeout(() => {
@@ -303,11 +320,23 @@ export function useInstaller() {
 
   // ─── 生命周期 ─────────────────────────────────────────────────────────────────
   onMounted(async () => {
-    try {
-      const defaultDir = await window.installer.getDefaultDir()
-      if (defaultDir) installPath.value = defaultDir
-    } catch {
-      if (!installPath.value) {
+    // 先尝试恢复上次的安装路径和选项
+    const saved = await window.installer.loadSettings()
+    if (saved) {
+      if (saved.lastInstallPath && typeof saved.lastInstallPath === 'string') {
+        installPath.value = saved.lastInstallPath
+      }
+      if (typeof saved.createShortcut === 'boolean') options.createShortcut = saved.createShortcut
+      if (typeof saved.autoStart === 'boolean') options.autoStart = saved.autoStart
+      if (typeof saved.associateFiles === 'boolean') options.associateFiles = saved.associateFiles
+      if (typeof saved.installServer === 'boolean') options.installServer = saved.installServer
+    }
+    // 兜底：没有保存记录时用系统默认路径
+    if (!installPath.value) {
+      try {
+        const defaultDir = await window.installer.getDefaultDir()
+        if (defaultDir) installPath.value = defaultDir
+      } catch {
         installPath.value = isWindows ? 'C:\\Program Files\\音乐' : '/Applications'
       }
     }

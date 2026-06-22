@@ -29,6 +29,9 @@ export interface InstallerAPI {
   launchApp:     (appPath: string) => Promise<boolean>
   // 外部链接
   openUrl:       (url: string) => Promise<boolean>
+  // 设置持久化
+  saveSettings:  (settings: Record<string, unknown>) => Promise<boolean>
+  loadSettings:  () => Promise<Record<string, unknown> | null>
   // 平台
   platform:      NodeJS.Platform
   // 日志监听

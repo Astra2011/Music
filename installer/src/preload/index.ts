@@ -54,6 +54,14 @@ const installerAPI = {
   openUrl: (url: string): Promise<boolean> =>
     ipcRenderer.invoke('installer:open-url', url),
 
+  // ── 设置持久化 ────────────────────────────────────────────────────────────
+  /** 保存安装器偏好（路径+选项），下次自动恢复 */
+  saveSettings: (settings: Record<string, unknown>): Promise<boolean> =>
+    ipcRenderer.invoke('installer:save-settings', settings),
+  /** 读取上次保存的偏好，首次返回 null */
+  loadSettings: (): Promise<Record<string, unknown> | null> =>
+    ipcRenderer.invoke('installer:load-settings'),
+
   // ── 日志监听 ──────────────────────────────────────────────────────────────
   onLog: (cb: (msg: string) => void) => {
     const handler = (_evt: Electron.IpcRendererEvent, msg: string) => cb(msg)
