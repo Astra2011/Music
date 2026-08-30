@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref, provide } from 'vue'
+import { onMounted, onUnmounted, ref, provide } from 'vue'
 import { useRoute } from 'vue-router'
 import { useMusicAction } from '@/store/music'
 import { getUserAccountFn } from '@/utils/userInfo'
 import { useFlags } from '@/store/flags'
+import { usePunchCard } from '@/store/punchCard'
 import Header from '@/layout/BaseHeader/index.vue'
 import Aside from '@/layout/BaseAside/index.vue'
 import Bottom from '@/layout/BaseBottom/index.vue'
@@ -12,12 +13,14 @@ import MusicPlayer, { MusicPlayerInstanceType } from '@/components/MusicPlayer/i
 import Login from '@/components/Login/index.vue'
 import { useUserInfo } from '@/store'
 import PlayListDrawer from '@/components/PlayListDrawer/index.vue'
+import PunchCardReminder from '@/components/PunchCardReminder/index.vue'
 import '@/utils/shortcutKey'
 import { useSettings } from '@/store/settings'
 import { useContextMenu } from './components/ContextMenu/useContextMenu'
 
 const audioInstance = ref<MusicPlayerInstanceType>()
 const login = ref()
+const punchCardRef = ref()
 const music = useMusicAction()
 const flags = useFlags()
 const route = useRoute()
@@ -43,11 +46,44 @@ onMounted(() => {
   if (settings.state.bold) {
     document.body.classList.add('bold')
   }
+
+  startPunchCardTimer()
 })
 store.addEvent('login', () => {
   refresh.value = refresh.value + 1
 })
 getUserAccountFn()
+
+// ─── 打卡提醒定时器 ──────────────────────────────────────────────
+let punchCardTimer: ReturnType<typeof setInterval> | null = null
+
+function startPunchCardTimer(): void {
+  const punchCard = usePunchCard()
+  // 每分钟检查一次是否需要弹出提醒
+  punchCardTimer = setInterval(() => {
+    if (punchCard.shouldShowReminder()) {
+      punchCardRef.value?.show()
+    }
+  }, 60000)
+
+  // 启动时立即检查一次
+  setTimeout(() => {
+    if (punchCard.shouldShowReminder()) {
+      punchCardRef.value?.show()
+    }
+  }, 3000)
+}
+
+function stopPunchCardTimer(): void {
+  if (punchCardTimer) {
+    clearInterval(punchCardTimer)
+    punchCardTimer = null
+  }
+}
+
+onUnmounted(() => {
+  stopPunchCardTimer()
+})
 </script>
 
 <template>
@@ -84,6 +120,7 @@ getUserAccountFn()
     </template>
   </Bottom>
   <Login ref="login"></Login>
+  <PunchCardReminder ref="punchCardRef"></PunchCardReminder>
 </template>
 
 <style lang="less">

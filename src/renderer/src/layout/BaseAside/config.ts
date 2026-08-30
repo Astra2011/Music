@@ -17,7 +17,7 @@ export type ListItem = {
   asideFontSize?: number
 } & Partial<PlayList>
 export interface MenuConfig {
-  title: '我的音乐' | '创建的歌单' | '收藏的歌单' | false
+  title: '我的音乐' | '歌单' | '收藏' | false
   mark: 'my' | 'play' | 'subscribedList' | false
   list: ListItem[]
   show?: boolean
@@ -41,7 +41,7 @@ export const originAsideMenuConfig: MenuConfig[] = [
     show: true,
     list: [
       {
-        name: '为我推荐',
+        name: '推荐',
         icon: 'icon-home-fill',
         path: '/home',
         asideFontSize,
@@ -98,14 +98,14 @@ export const originAsideMenuConfig: MenuConfig[] = [
     ]
   },
   {
-    title: '创建的歌单',
+    title: '歌单',
     mark: 'play',
     type: 'collapsed',
     isCollapsed: true,
     list: []
   },
   {
-    title: '收藏的歌单',
+    title: '收藏',
     mark: 'subscribedList',
     type: 'collapsed',
     isCollapsed: true,

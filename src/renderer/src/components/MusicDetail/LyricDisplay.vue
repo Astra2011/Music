@@ -165,6 +165,9 @@ const arNames = computed(() => {
       transition: 0.8s;
       .bgSetting();
     }
+    .img-cover:hover {
+      background-color: rgba(0, 0, 0, 0.3);
+    }
     .lyric-container {
       height: 145%;
       width: 40vw;

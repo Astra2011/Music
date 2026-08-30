@@ -10,7 +10,8 @@ import DetailRight from '@/components/MusicPlayer/DetailRight.vue'
 import { ListenerName, useListener } from '@/components/MusicPlayer/listener'
 import usePlayList, { playListState } from '@/layout/BaseAside/usePlayList'
 import '@lrc-player/core/dist/style.css'
-import Player from '@lrc-player/core'
+// import Player from '@lrc-player/core'
+import Player from '../../../../../../lrc-player/packages/core/src/player/index'
 import { useFlags } from '@/store/flags'
 
 const orderStatus = ['icon-xihuan5', 'icon-xunhuan', 'icon-suijibofang', 'icon-danquxunhuan']

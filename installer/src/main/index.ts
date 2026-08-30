@@ -198,15 +198,39 @@ ipcMain.handle('installer:disk-info', (_evt, targetPath: string) => {
 })
 
 // ─── 设置持久化（记住安装路径和选项） ────────────────────────────────────────
-function getSettingsRegKey(): string {
-  return 'HKCU\\Software\\音乐'
+const SETTINGS_REG_KEY = 'HKCU:\\Software\\音乐'
+
+/** 用 PowerShell 执行注册表操作（避免 reg.exe 的 GBK 编码乱码问题） */
+function psRegistrySave(key: string, name: string, value: string): void {
+  // -EncodedCommand 用 UTF-16LE 传参，完整保留 Unicode
+  const script = `Set-ItemProperty -Path '${key}' -Name '${name}' -Value '${value.replace(/'/g, "''")}' -Type String -ErrorAction Stop`
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { windowsHide: true })
+}
+
+function psRegistryLoad(key: string, name: string): string | null {
+  const script = [
+    `$val = Get-ItemProperty -Path '${key}' -Name '${name}' -ErrorAction SilentlyContinue`,
+    `if ($val) { Write-Output $val.${name} }`
+  ].join('; ')
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  const out = execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, {
+    windowsHide: true,
+    encoding: 'utf8'  // PowerShell 输出就是 UTF-8
+  }).trim()
+  return out || null
 }
 
 ipcMain.handle('installer:save-settings', (_evt, settings: Record<string, unknown>) => {
   try {
     const json = JSON.stringify(settings)
     if (process.platform === 'win32') {
-      execSync(`reg add "${getSettingsRegKey()}" /v InstallerPrefs /t REG_SZ /d "${json.replace(/"/g, '\\"')}" /f`, { windowsHide: true })
+      // 确保注册表路径存在
+      execSync(
+        `powershell -NoProfile -NonInteractive -Command "New-Item -Path '${SETTINGS_REG_KEY}' -Force -ErrorAction SilentlyContinue | Out-Null"`,
+        { windowsHide: true }
+      )
+      psRegistrySave(SETTINGS_REG_KEY, 'InstallerPrefs', json)
     } else {
       const { writeFileSync, mkdirSync } = require('fs')
       const dir = join(app.getPath('home'), '.config', 'music')
@@ -222,9 +246,8 @@ ipcMain.handle('installer:save-settings', (_evt, settings: Record<string, unknow
 ipcMain.handle('installer:load-settings', () => {
   try {
     if (process.platform === 'win32') {
-      const out = execSync(`reg query "${getSettingsRegKey()}" /v InstallerPrefs 2>nul`, { windowsHide: true }).toString()
-      const match = out.match(/InstallerPrefs\s+REG_SZ\s+(.+)/s)
-      if (match) return JSON.parse(match[1].trim())
+      const raw = psRegistryLoad(SETTINGS_REG_KEY, 'InstallerPrefs')
+      if (raw) return JSON.parse(raw)
     } else {
       const { readFileSync } = require('fs')
       const path = join(app.getPath('home'), '.config', 'music', 'installer-prefs.json')
@@ -291,25 +314,6 @@ ipcMain.handle('installer:run', async (evt, opts: InstallOptions) => {
         await delay(500)
       }
 
-      // 备份用户数据目录（保留登录态/配置/缓存）
-      const dataDir = join(destAppPath, 'data')
-      const dataBackup = join(app.getPath('temp'), `music-data-backup-${Date.now()}`)
-      let hasBackup = false
-      if (existsSync(dataDir)) {
-        log('[删除旧版本] 备份用户数据目录...')
-        try {
-          // PowerShell Copy-Item 跨盘可靠，无 robocopy 退出码问题
-          execSync(
-            `powershell -NoProfile -Command "Copy-Item -Path '${dataDir}' -Destination '${dataBackup}' -Recurse -Force"`,
-            { timeout: 30000, windowsHide: true }
-          )
-          rmSync(dataDir, { recursive: true, force: true })
-          hasBackup = true
-          log('[删除旧版本] ✓ 用户数据已备份')
-        } catch (err: unknown) {
-          logError(`[删除旧版本] 备份用户数据失败: ${err instanceof Error ? err.message : err}`)
-        }
-      }
       log(`发现旧版本，准备删除: ${destAppPath}`)
       send('正在移除旧版本...', 20)
       await delay(400)
@@ -325,7 +329,6 @@ ipcMain.handle('installer:run', async (evt, opts: InstallOptions) => {
           logError(`[删除旧版本] attrib 命令失败: ${err instanceof Error ? err.message : err}`)
         }
 
-        // 尝试使用 takeown 和 icacls 获取完全控制权
         try {
           log('[删除旧版本] 执行 takeown 命令获取文件所有权...')
           execSync(`takeown /F "${destAppPath}" /R /D Y`, { shell: 'cmd.exe', timeout: 30000 })
@@ -346,105 +349,28 @@ ipcMain.handle('installer:run', async (evt, opts: InstallOptions) => {
         }
       }
 
-      // 等待权限修复完成
       await delay(1000)
 
-      // 尝试删除
-      log('[删除旧版本] 步骤2: 开始删除目录...')
-      if (process.platform === 'darwin') {
-        // macOS 下 .app 包内含 asar 等特殊文件，用 shell rm -rf 更可靠
-        try {
-          log('[删除旧版本] macOS: 执行 chmod -R 777...')
-          execSync(`chmod -R 777 "${destAppPath}" 2>/dev/null || true`)
-          log('[删除旧版本] macOS: 执行 rm -rf...')
-          execSync(`rm -rf "${destAppPath}"`)
-          log('[删除旧版本] macOS: 删除成功')
-        } catch (err: unknown) {
-          logError(`[删除旧版本] macOS shell 命令失败: ${err instanceof Error ? err.message : err}`)
-          // fallback: Node.js rmSync
-          log('[删除旧版本] macOS: 尝试使用 rmSync...')
+      // 步骤2: 逐个删除，跳过 data/（保留用户数据）
+      log('[删除旧版本] 步骤2: 删除旧文件（保留 data/）...')
+      try {
+        const entries = readdirSync(destAppPath)
+        for (const entry of entries) {
+          if (entry === 'data') {
+            log('[删除旧版本] 跳过 data/ 目录')
+            continue
+          }
+          const fullPath = join(destAppPath, entry)
           try {
-            rmSync(destAppPath, { recursive: true, force: true })
-            log('[删除旧版本] macOS: rmSync 成功')
-          } catch (err2: unknown) {
-            logError(
-              `[删除旧版本] macOS rmSync 也失败: ${err2 instanceof Error ? err2.message : err2}`
-            )
-            throw new Error(`无法删除旧版本：${err instanceof Error ? err.message : err}`)
+            rmSync(fullPath, { recursive: true, force: true })
+          } catch (err: unknown) {
+            logError(`[删除旧版本] 无法删除: ${entry} (${err instanceof Error ? err.message : err})`)
           }
         }
-      } else {
-        // Windows
-        try {
-          log(`[删除旧版本] Windows: 尝试使用 rmSync 删除...`)
-          rmSync(destAppPath, { recursive: true, force: true })
-          log('[删除旧版本] Windows: rmSync 成功')
-        } catch (err: unknown) {
-          logError(`[删除旧版本] Windows rmSync 失败: ${err instanceof Error ? err.message : err}`)
-
-          // 尝试分步删除：先列出所有文件
-          log('[删除旧版本] Windows: 尝试分步删除...')
-          try {
-            const files = listAllFiles(destAppPath)
-            log(`[删除旧版本] Windows: 找到 ${files.length} 个文件`)
-
-            // 逐个删除文件
-            let deletedCount = 0
-            let failedFiles: string[] = []
-            for (const file of files) {
-              try {
-                rmSync(file, { force: true })
-                deletedCount++
-              } catch (fileErr: unknown) {
-                logError(`[删除旧版本] 无法删除文件: ${file}`)
-                logError(
-                  `[删除旧版本] 错误: ${fileErr instanceof Error ? fileErr.message : fileErr}`
-                )
-                failedFiles.push(file)
-              }
-            }
-            log(`[删除旧版本] Windows: 成功删除 ${deletedCount}/${files.length} 个文件`)
-
-            // 尝试删除空目录
-            if (failedFiles.length === 0) {
-              try {
-                rmSync(destAppPath, { recursive: true, force: true })
-                log('[删除旧版本] Windows: 目录删除成功')
-              } catch (dirErr: unknown) {
-                logError(
-                  `[删除旧版本] Windows: 目录删除失败: ${dirErr instanceof Error ? dirErr.message : dirErr}`
-                )
-              }
-            } else {
-              logError(`[删除旧版本] Windows: 有 ${failedFiles.length} 个文件无法删除`)
-              throw new Error(
-                `无法删除以下文件:\n${failedFiles.slice(0, 5).join('\n')}${failedFiles.length > 5 ? '\n...' : ''}`
-              )
-            }
-          } catch (err3: unknown) {
-            logError(
-              `[删除旧版本] Windows 分步删除失败: ${err3 instanceof Error ? err3.message : err3}`
-            )
-            throw new Error(`无法删除旧版本：${err instanceof Error ? err.message : err}`)
-          }
-        }
-      }
-      log('旧版本已删除')
-
-      // 恢复用户数据
-      if (hasBackup && existsSync(dataBackup)) {
-        log('[删除旧版本] 恢复用户数据目录...')
-        try {
-          ensureDir(destAppPath)
-          execSync(
-            `powershell -NoProfile -Command "Copy-Item -Path '${dataBackup}' -Destination '${dataDir}' -Recurse -Force"`,
-            { timeout: 30000, windowsHide: true }
-          )
-          rmSync(dataBackup, { recursive: true, force: true })
-          log('[删除旧版本] ✓ 用户数据已恢复')
-        } catch (err: unknown) {
-          logError(`[删除旧版本] 恢复用户数据失败: ${err instanceof Error ? err.message : err}`)
-        }
+        log('[删除旧版本] ✓ 旧版本已删除，用户数据已保留')
+      } catch (err: unknown) {
+        logError(`[删除旧版本] 遍历目录失败: ${err instanceof Error ? err.message : err}`)
+        throw new Error(`无法删除旧版本：${err instanceof Error ? err.message : err}`)
       }
     }
 

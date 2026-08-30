@@ -63,10 +63,29 @@
    ```
 ### 可能会遇到的问题
 
-#### 1. Electron uninstall
-     尝试更改node版本， node 版本：20->18.20.1 。
-     查看这个链接获取更多信息：https://github.com/alex8088/electron-vite/issues/129
+#### 1. Electron 未正确安装（报错：Electron uninstall）
 
+**现象**：运行 `pnpm dev` 时出现 `Error: Electron uninstall` 错误。
+
+**可能原因**：
+- Electron 的二进制文件未下载或下载不完整
+- Node.js 版本与 Electron 存在兼容性问题
+
+**解决方案**：
+
+---
+
+##### 方案一：切换 Node.js 版本
+
+根据 [electron-vite 官方 issue #129](https://github.com/alex8088/electron-vite/issues/129) 的反馈，将 Node.js 版本从 20 降级到 18.20.1 可以解决部分兼容性问题。
+
+```bash
+# 使用 nvm 切换版本（如果已安装 nvm）
+nvm install 18.20.1
+nvm use 18.20.1
+
+# 或直接下载安装 Node.js 18.20.1
+# https://nodejs.org/download/release/v18.20.1/
 ### 3. 配置
 
 在 `.env` 文件中配置 API 服务器地址：
