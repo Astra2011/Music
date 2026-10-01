@@ -2,13 +2,10 @@ name: Build
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -17,21 +14,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux 脚本在当前 package.json 中不存在，暂不纳入
           - os: windows-latest
             platform: win
-            build_command: pnpm installer:build:win
           - os: macos-latest
             platform: mac
-            build_command: pnpm installer:build:mac
-          - os: ubuntu-latest
-            platform: linux
-            build_command: pnpm installer:build:linux
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Music
         uses: actions/checkout@v4
+        with:
+          path: Music
+
+      # 关键：脚本里写的是 cd ../NeteaseCloudMusicApi
+      # 因此必须 clone 成 Music 的兄弟目录
+      - name: Checkout NeteaseCloudMusicApi (sibling dir)
+        uses: actions/checkout@v4
+        with:
+          repository: NeteaseCloudMusicApiEnhanced/api-enhanced
+          path: NeteaseCloudMusicApi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -43,12 +46,17 @@ jobs:
         with:
           node-version: 18.20.1
           cache: 'pnpm'
+          cache-dependency-path: Music/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install Music dependencies
+        working-directory: Music
         run: pnpm install --frozen-lockfile
 
-      - name: Build application
-        run: ${{ matrix.build_command }}
+      # 走仓库自带的 installer:build:* 脚本
+      # 该脚本内部会再 cd ../NeteaseCloudMusicApi 并 npm install
+      - name: Build installer
+        working-directory: Music
+        run: pnpm installer:build:${{ matrix.platform }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -57,11 +65,14 @@ jobs:
         with:
           name: ${{ matrix.platform }}-installer
           path: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.yml
+            Music/dist/**/*.exe
+            Music/dist/**/*.dmg
+            Music/dist/**/*.blockmap
+            Music/dist/**/*.yml
+            Music/installer/**/*.exe
+            Music/installer/**/*.dmg
+            Music/installer/**/*.blockmap
+            Music/installer/**/*.yml
           if-no-files-found: ignore
           retention-days: 7
 
@@ -71,9 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
